@@ -23,11 +23,20 @@ static const uint8_t AES_SHARED_KEY[AES_KEY_SIZE] = {
     0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c
 };
 
-// Packet structure: [NONCE(16 bytes)][ENCRYPTED_DATA]
+// HMAC Key (separate from encryption key for better security)
+static const uint8_t HMAC_KEY[32] = {
+    0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+    0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+    0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78,
+    0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0
+};
+
+// Packet structure: [NONCE(16 bytes)][ENCRYPTED_DATA][HMAC(32 bytes)]
 typedef struct {
     uint8_t nonce[AES_BLOCK_SIZE];
     uint8_t data[BUF_SIZE];
     size_t data_len;
+    uint8_t hmac[HMAC_SIZE];
 } encrypted_packet_t;
 
 /**
@@ -52,10 +61,12 @@ static void uart_init(void) {
 }
 
 /**
- * @brief Encrypt and send data over UART
+ * @brief Encrypt and send data over UART with HMAC authentication
  */
 static void send_encrypted_data(const uint8_t *plaintext, size_t length) {
     encrypted_packet_t packet;
+    uint8_t hmac_input[AES_BLOCK_SIZE + BUF_SIZE];
+    size_t hmac_input_len;
 
     // Generate random nonce
     aes_generate_nonce(packet.nonce);
@@ -64,6 +75,12 @@ static void send_encrypted_data(const uint8_t *plaintext, size_t length) {
     aes_encrypt_ctr(plaintext, packet.data, length, packet.nonce);
     packet.data_len = length;
 
+    // Compute HMAC over [NONCE || ENCRYPTED_DATA]
+    memcpy(hmac_input, packet.nonce, AES_BLOCK_SIZE);
+    memcpy(hmac_input + AES_BLOCK_SIZE, packet.data, length);
+    hmac_input_len = AES_BLOCK_SIZE + length;
+    compute_hmac_sha256(hmac_input, hmac_input_len, HMAC_KEY, sizeof(HMAC_KEY), packet.hmac);
+
     // Log the operation
     ESP_LOGI(TAG, "Encrypting %d bytes", length);
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, plaintext, length, ESP_LOG_INFO);
@@ -71,6 +88,8 @@ static void send_encrypted_data(const uint8_t *plaintext, size_t length) {
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, packet.nonce, AES_BLOCK_SIZE, ESP_LOG_INFO);
     ESP_LOGI(TAG, "Encrypted data:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, packet.data, length, ESP_LOG_INFO);
+    ESP_LOGI(TAG, "HMAC:");
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, packet.hmac, HMAC_SIZE, ESP_LOG_INFO);
 
     // Send nonce first (16 bytes)
     int nonce_sent = uart_write_bytes(UART_NUM, packet.nonce, AES_BLOCK_SIZE);
@@ -86,7 +105,15 @@ static void send_encrypted_data(const uint8_t *plaintext, size_t length) {
         return;
     }
 
-    ESP_LOGI(TAG, "Sent %d bytes (nonce + encrypted data)", nonce_sent + data_sent);
+    // Send HMAC (32 bytes)
+    int hmac_sent = uart_write_bytes(UART_NUM, packet.hmac, HMAC_SIZE);
+    if (hmac_sent != HMAC_SIZE) {
+        ESP_LOGE(TAG, "Failed to send HMAC");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Sent %d bytes (nonce: %d + data: %d + hmac: %d)",
+             nonce_sent + data_sent + hmac_sent, nonce_sent, data_sent, hmac_sent);
 }
 
 /**

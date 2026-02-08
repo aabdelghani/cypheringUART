@@ -22,11 +22,20 @@ static const uint8_t AES_SHARED_KEY[AES_KEY_SIZE] = {
     0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c
 };
 
-// Packet structure: [NONCE(16 bytes)][ENCRYPTED_DATA]
+// HMAC Key (must match sender)
+static const uint8_t HMAC_KEY[32] = {
+    0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+    0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+    0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78,
+    0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0
+};
+
+// Packet structure: [NONCE(16 bytes)][ENCRYPTED_DATA][HMAC(32 bytes)]
 typedef struct {
     uint8_t nonce[AES_BLOCK_SIZE];
     uint8_t encrypted_data[BUF_SIZE];
     uint8_t decrypted_data[BUF_SIZE];
+    uint8_t received_hmac[HMAC_SIZE];
     size_t data_len;
 } packet_t;
 
@@ -52,9 +61,12 @@ static void uart_init(void) {
 }
 
 /**
- * @brief Receive and decrypt data from UART
+ * @brief Receive and decrypt data from UART with HMAC verification
  */
 static bool receive_and_decrypt(packet_t *packet) {
+    uint8_t hmac_input[AES_BLOCK_SIZE + BUF_SIZE];
+    size_t hmac_input_len;
+
     // Read nonce first (16 bytes)
     int nonce_len = uart_read_bytes(UART_NUM, packet->nonce, AES_BLOCK_SIZE, pdMS_TO_TICKS(1000));
 
@@ -84,7 +96,33 @@ static bool receive_and_decrypt(packet_t *packet) {
     ESP_LOGI(TAG, "Received encrypted data (%d bytes):", data_len);
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, packet->encrypted_data, data_len, ESP_LOG_INFO);
 
-    // Decrypt the data
+    // Wait for HMAC to arrive
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    // Read HMAC (32 bytes)
+    int hmac_len = uart_read_bytes(UART_NUM, packet->received_hmac, HMAC_SIZE, pdMS_TO_TICKS(500));
+
+    if (hmac_len != HMAC_SIZE) {
+        ESP_LOGE(TAG, "Incomplete or no HMAC received: %d bytes", hmac_len);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Received HMAC:");
+    ESP_LOG_BUFFER_HEX_LEVEL(TAG, packet->received_hmac, HMAC_SIZE, ESP_LOG_INFO);
+
+    // Verify HMAC before decryption (authenticate then decrypt)
+    memcpy(hmac_input, packet->nonce, AES_BLOCK_SIZE);
+    memcpy(hmac_input + AES_BLOCK_SIZE, packet->encrypted_data, data_len);
+    hmac_input_len = AES_BLOCK_SIZE + data_len;
+
+    if (!verify_hmac_sha256(hmac_input, hmac_input_len, HMAC_KEY, sizeof(HMAC_KEY), packet->received_hmac)) {
+        ESP_LOGE(TAG, "HMAC verification FAILED! Message may be corrupted or tampered!");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "✓ HMAC verification PASSED - Message authentic");
+
+    // Decrypt the data (only after successful authentication)
     aes_decrypt_ctr(packet->encrypted_data, packet->decrypted_data, data_len, packet->nonce);
 
     ESP_LOGI(TAG, "Decrypted data:");
