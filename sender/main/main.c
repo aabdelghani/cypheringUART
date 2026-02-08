@@ -31,11 +31,11 @@ static const uint8_t HMAC_KEY[32] = {
     0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0
 };
 
-// Packet structure: [NONCE(16 bytes)][ENCRYPTED_DATA][HMAC(32 bytes)]
+// Packet structure: [NONCE(16 bytes)][LENGTH(2 bytes)][ENCRYPTED_DATA][HMAC(32 bytes)]
 typedef struct {
     uint8_t nonce[AES_BLOCK_SIZE];
+    uint16_t data_len;
     uint8_t data[BUF_SIZE];
-    size_t data_len;
     uint8_t hmac[HMAC_SIZE];
 } encrypted_packet_t;
 
@@ -52,8 +52,8 @@ static void uart_init(void) {
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    // Install UART driver
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
+    // Install UART driver (RX buffer, TX buffer, queue size, queue handle, interrupt flags)
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE * 2, BUF_SIZE * 2, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
@@ -65,20 +65,26 @@ static void uart_init(void) {
  */
 static void send_encrypted_data(const uint8_t *plaintext, size_t length) {
     encrypted_packet_t packet;
-    uint8_t hmac_input[AES_BLOCK_SIZE + BUF_SIZE];
+    uint8_t hmac_input[AES_BLOCK_SIZE + 2 + BUF_SIZE];
     size_t hmac_input_len;
+    uint8_t length_bytes[2];
 
     // Generate random nonce
     aes_generate_nonce(packet.nonce);
 
     // Encrypt the data
     aes_encrypt_ctr(plaintext, packet.data, length, packet.nonce);
-    packet.data_len = length;
+    packet.data_len = (uint16_t)length;
 
-    // Compute HMAC over [NONCE || ENCRYPTED_DATA]
+    // Prepare length as big-endian 2 bytes
+    length_bytes[0] = (packet.data_len >> 8) & 0xFF;
+    length_bytes[1] = packet.data_len & 0xFF;
+
+    // Compute HMAC over [NONCE || LENGTH || ENCRYPTED_DATA]
     memcpy(hmac_input, packet.nonce, AES_BLOCK_SIZE);
-    memcpy(hmac_input + AES_BLOCK_SIZE, packet.data, length);
-    hmac_input_len = AES_BLOCK_SIZE + length;
+    memcpy(hmac_input + AES_BLOCK_SIZE, length_bytes, 2);
+    memcpy(hmac_input + AES_BLOCK_SIZE + 2, packet.data, length);
+    hmac_input_len = AES_BLOCK_SIZE + 2 + length;
     compute_hmac_sha256(hmac_input, hmac_input_len, HMAC_KEY, sizeof(HMAC_KEY), packet.hmac);
 
     // Log the operation
@@ -98,6 +104,13 @@ static void send_encrypted_data(const uint8_t *plaintext, size_t length) {
         return;
     }
 
+    // Send length (2 bytes, big-endian)
+    int length_sent = uart_write_bytes(UART_NUM, length_bytes, 2);
+    if (length_sent != 2) {
+        ESP_LOGE(TAG, "Failed to send length");
+        return;
+    }
+
     // Send encrypted data
     int data_sent = uart_write_bytes(UART_NUM, packet.data, length);
     if (data_sent != length) {
@@ -112,8 +125,8 @@ static void send_encrypted_data(const uint8_t *plaintext, size_t length) {
         return;
     }
 
-    ESP_LOGI(TAG, "Sent %d bytes (nonce: %d + data: %d + hmac: %d)",
-             nonce_sent + data_sent + hmac_sent, nonce_sent, data_sent, hmac_sent);
+    ESP_LOGI(TAG, "Sent %d bytes (nonce: %d + length: %d + data: %d + hmac: %d)",
+             nonce_sent + length_sent + data_sent + hmac_sent, nonce_sent, length_sent, data_sent, hmac_sent);
 }
 
 /**
@@ -160,8 +173,8 @@ void app_main(void) {
     // Initialize UART
     uart_init();
 
-    // Create sender task
-    xTaskCreate(sender_task, "sender_task", 4096, NULL, 5, NULL);
+    // Create sender task (increased stack for HMAC operations)
+    xTaskCreate(sender_task, "sender_task", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Sender ready, starting transmission...");
 }

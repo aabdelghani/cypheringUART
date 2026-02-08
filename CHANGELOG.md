@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 2026-02-08 22:41:06
+
+#### Critical Bug Fixes: Stack Overflow & Protocol Length Field
+
+**Issues Identified:**
+
+1. **Stack Overflow in Sender Task** (Boot Loop Crash)
+   - **Symptom**: Sender crashed immediately after sending first message with error:
+     ```
+     ***ERROR*** A stack overflow in task sender_task has been detected.
+     Backtrace: panic_abort -> vApplicationStackOverflowHook
+     ```
+   - **Root Cause**: HMAC-SHA256 operations (using mbedtls) require more stack space than originally allocated
+   - **Impact**: Sender continuously rebooted, unable to send messages
+
+2. **Receiver Reading Wrong Data Length** (HMAC Verification Failure)
+   - **Symptom**: Receiver read 1024 bytes instead of actual message length (~24 bytes), HMAC verification always failed
+   - **Root Cause**: Protocol lacked length field, receiver called `uart_read_bytes(UART_NUM, buffer, BUF_SIZE, timeout)` which filled buffer with garbage
+   - **Impact**: All messages rejected due to HMAC mismatch, no successful decryption
+
+**Solutions Implemented:**
+
+1. **Stack Overflow Fix**
+   - **Change**: Increased sender task stack from 4096 to **8192 bytes**
+   - **Location**: `sender/main/main.c:164`
+   - **Result**: Task now has sufficient stack for HMAC operations
+
+2. **Protocol Enhancement: Added 2-Byte Length Field**
+   - **New Protocol**: `[NONCE(16)][LENGTH(2)][ENCRYPTED_DATA(variable)][HMAC(32)]`
+   - **Sender Changes**:
+     - Sends 2-byte big-endian length field after nonce
+     - Updated HMAC computation: `HMAC([NONCE || LENGTH || ENCRYPTED_DATA])`
+   - **Receiver Changes**:
+     - Reads 2-byte length field after nonce
+     - Validates length (0 < length ≤ BUF_SIZE)
+     - Reads **exactly** that many bytes of encrypted data (no more garbage)
+     - Updated HMAC verification to match sender's computation
+   - **Result**: Receiver now reads correct amount of data, HMAC verification succeeds
+
+**Modified Files:**
+- `sender/main/main.c` - Added length field transmission, increased stack size, updated HMAC
+- `reciever/main/main.c` - Added length field reception and validation, updated HMAC verification
+
+**Testing Status:**
+- ✅ Sender builds successfully (225,360 bytes)
+- ✅ Receiver builds successfully (226,960 bytes)
+- ✅ No stack overflow errors
+- ✅ Protocol now properly handles variable-length messages
+
+---
+
 ### Added - 2026-02-08 22:13:27
 
 #### HMAC-SHA256 Message Authentication (UL1998 Section 1.5i)
