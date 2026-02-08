@@ -1,0 +1,109 @@
+# PDF Documentation
+*.pdf
+STCom_AES_Encryption_Proposal.pdf
+UL1998.pdf
+
+# ESP-IDF Build Files
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults
+
+# ESP-IDF Dependencies
+dependencies.lock
+managed_components/
+
+# Compiled Object Files
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+
+# Compiled Static Libraries
+*.a
+*.lib
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.code-workspace
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# Logs
+*.log
+
+# Temporary Files
+*.tmp
+*.temp
+*.bak
+
+# Compiled sniffer
+uart_decrypt_sniffer
+uart_sniffer
+*.out
+
+# Core dumps
+core
+core.*
+
+# Distribution / packaging
+dist/
+*.egg-info/
+
+# Test outputs
+test_results/
+coverage/
+
+# Environment variables
+.env
+.env.local
+
+# Certificates and Keys (if you add them later)
+*.pem
+*.key
+*.crt
+*.p12
+certificates/
+keys/
+
+# Backup files
+*~
+*.orig
+*.rej
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.Trash-*
+
+# Project specific
+captured_data.bin
+*.pcap
